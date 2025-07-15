@@ -1,0 +1,292 @@
+
+
+
+  
+  
+  人狼ゲーム GM ツール
+  
+
+
+  人狼ゲーム GM ツール
+
+  
+  
+    GM ログイン
+    GMとしてログイン
+  
+
+  
+  
+    プレイヤーログイン
+    
+    ログイン
+  
+
+  
+  
+    プレイヤー設定
+    
+    
+    
+    ゲーム開始
+  
+
+  
+  
+    GM コントロール
+    
+    
+    
+    議論開始
+    夜フェーズ
+  
+
+  
+  
+    プレイヤーアクション
+    
+    
+    
+    アクション実行
+  
+
+  
+  
+    ゲームログ
+    
+  
+
+  
+    let players = [];
+    let werewolves = [];
+    let seers = [];
+    let phase = "setup";
+    let timerInterval = null;
+    let currentPlayer = null;
+    let isGM = false;
+
+    // Initialize game state in localStorage
+    if (!localStorage.getItem("gameState")) {
+      localStorage.setItem("gameState", JSON.stringify({ players: [], phase: "setup", actions: {} }));
+    }
+
+    function loginAsGM() {
+      isGM = true;
+      document.getElementById("gmLogin").classList.add("hidden");
+      document.getElementById("playerLogin").classList.add("hidden");
+      document.getElementById("gmSetup").classList.remove("hidden");
+      document.getElementById("gmControl").classList.remove("hidden");
+      updateGMView();
+    }
+
+    function loginAsPlayer() {
+      const name = document.getElementById("playerName").value.trim();
+      if (!name) {
+        addLog("エラー: 名前を入力してください。");
+        return;
+      }
+      currentPlayer = name;
+      document.getElementById("gmLogin").classList.add("hidden");
+      document.getElementById("playerLogin").classList.add("hidden");
+      document.getElementById("playerAction").classList.remove("hidden");
+      startPlayerPolling();
+      updatePlayerView();
+    }
+
+    function setupGame() {
+      if (!isGM) return;
+      const playerInput = document.getElementById("playerInput").value;
+      const werewolfCount = parseInt(document.getElementById("werewolfCount").value);
+      const seerCount = parseInt(document.getElementById("seerCount").value) || 0;
+      if (!playerInput || isNaN(werewolfCount) || werewolfCount < 1 || seerCount < 0 || seerCount > 1) {
+        addLog("エラー: プレイヤー名、人狼の数、占い師の数を正しく入力してください。");
+        return;
+      }
+
+      players = playerInput.split(",").map(name => ({
+        name: name.trim(),
+        alive: true,
+        role: "村人"
+      }));
+
+      if (werewolfCount >= players.length / 2 || seerCount + werewolfCount >= players.length) {
+        addLog("エラー: 人狼と占い師の合計がプレイヤー数の半分未満になるようにしてください。");
+        return;
+      }
+
+      document.getElementById("log").innerHTML = "";
+      werewolves = [];
+      seers = [];
+
+      // Assign roles
+      let indices = Array.from({ length: players.length }, (_, i) => i);
+      for (let i = 0; i < werewolfCount; i++) {
+        const randomIndex = Math.floor(Math.random() * indices.length);
+        const playerIndex = indices.splice(randomIndex, 1)[0];
+        players[playerIndex].role = "人狼";
+        werewolves.push(players[playerIndex]);
+      }
+      for (let i = 0; i < seerCount; i++) {
+        const randomIndex = Math.floor(Math.random() * indices.length);
+        const playerIndex = indices.splice(randomIndex, 1)[0];
+        players[playerIndex].role = "占い師";
+        seers.push(players[playerIndex]);
+      }
+
+      phase = "day";
+      localStorage.setItem("gameState", JSON.stringify({ players, phase, actions: {} }));
+      document.getElementById("gmSetup").classList.add("hidden");
+      updateGMView();
+      addLog("ゲームを開始しました。プレイヤー: " + players.map(p => p.name).join(", "));
+    }
+
+    function startDiscussion() {
+      if (!isGM || phase !== "day") return;
+      let timeLeft = 300;
+      document.getElementById("gmTimer").textContent = `残り議論時間: ${formatTime(timeLeft)}`;
+      if (timerInterval) clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        timeLeft--;
+        document.getElementById("gmTimer").textContent = `残り議論時間: ${formatTime(timeLeft)}`;
+        if (timeLeft <= 0) {
+          clearInterval(timerInterval);
+          addLog("議論時間が終了しました。");
+        }
+      }, 1000);
+      addLog("議論フェーズを開始しました（5分）。");
+    }
+
+    function startNight() {
+      if (!isGM || phase !== "day") return;
+      phase = "night";
+      clearInterval(timerInterval);
+      document.getElementById("gmTimer").textContent = "";
+      localStorage.setItem("gameState", JSON.stringify({ players, phase, actions: {} }));
+      addLog("夜フェーズを開始しました。");
+      updateGMView();
+    }
+
+    function submitAction() {
+      if (!currentPlayer || phase !== "night") return;
+      const target = document.getElementById("actionTarget").value;
+      const gameState = JSON.parse(localStorage.getItem("gameState"));
+      const player = gameState.players.find(p => p.name === currentPlayer);
+      if (!player || !player.alive) return;
+
+      gameState.actions[currentPlayer] = { role: player.role, target };
+      localStorage.setItem("gameState", JSON.stringify(gameState));
+      addLog(`${currentPlayer}がアクションを送信しました。`);
+    }
+
+    function processNightActions() {
+      if (!isGM || phase !== "night") return;
+      const gameState = JSON.parse(localStorage.getItem("gameState"));
+      const actions = gameState.actions;
+
+      // Process Seer actions
+      seers.filter(s => s.alive).forEach(seer => {
+        const action = actions[seer.name];
+        if (action && action.target) {
+          const target = gameState.players.find(p => p.name === action.target);
+          addLog(`${seer.name}（占い師）が${target.name}を占いました。結果：${target.role}`);
+        }
+      });
+
+      // Process Werewolf actions
+      const werewolfActions = werewolves.filter(w => w.alive).map(w => actions[w.name]?.target).filter(t => t);
+      let target;
+      if (werewolfActions.length > 0) {
+        target = werewolfActions[0]; // Use first werewolf's choice (simplified)
+      } else {
+        const aliveVillagers = gameState.players.filter(p => p.alive && p.role !== "人狼");
+        if (aliveVillagers.length === 0) {
+          addLog("村人がいません。ゲーム終了。");
+          phase = "ended";
+          localStorage.setItem("gameState", JSON.stringify({ players, phase, actions: {} }));
+          updateGMView();
+          return;
+        }
+        target = aliveVillagers[Math.floor(Math.random() * aliveVillagers.length)].name;
+      }
+
+      const targetPlayer = gameState.players.find(p => p.name === target);
+      if (targetPlayer) {
+        targetPlayer.alive = false;
+        addLog(`夜フェーズ: 人狼が${targetPlayer.name}を襲撃しました。`);
+      }
+
+      // Check game end
+      const aliveWerewolves = gameState.players.filter(p => p.alive && p.role === "人狼").length;
+      const alivePlayers = gameState.players.filter(p => p.alive).length;
+      if (aliveWerewolves >= alivePlayers - aliveWerewolves) {
+        addLog("人狼の勝利！ゲーム終了。");
+        phase = "ended";
+      } else if (aliveWerewolves === 0) {
+        addLog("村人の勝利！ゲーム終了。");
+        phase = "ended";
+      } else {
+        phase = "day";
+      }
+
+      players = gameState.players;
+      localStorage.setItem("gameState", JSON.stringify({ players, phase, actions: {} }));
+      updateGMView();
+    }
+
+    function startPlayerPolling() {
+      setInterval(() => {
+        updatePlayerView();
+      }, 1000);
+    }
+
+    function updateGMView() {
+      if (!isGM) return;
+      const gameState = JSON.parse(localStorage.getItem("gameState"));
+      players = gameState.players;
+      phase = gameState.phase;
+      document.getElementById("gmPhase").textContent = `現在のフェーズ: ${phase === "day" ? "昼" : phase === "night" ? "夜" : "ゲーム終了"}`;
+      document.getElementById("gmPlayers").textContent = `生存者: ${players.filter(p => p.alive).map(p => p.name).join(", ")}`;
+      if (phase === "night") {
+        document.getElementById("gmControl").innerHTML += `<button onclick="processNightActions()" class="bg-yellow-500 text-white p-2 rounded hover:bg-yellow-600 mt-2">夜アクション処理</button>`;
+      }
+    }
+
+    function updatePlayerView() {
+      if (!currentPlayer) return;
+      const gameState = JSON.parse(localStorage.getItem("gameState"));
+      players = gameState.players;
+      phase = gameState.phase;
+      const player = players.find(p => p.name === currentPlayer);
+      if (!player) {
+        document.getElementById("playerRole").textContent = "エラー: プレイヤーが見つかりません。";
+        return;
+      }
+      document.getElementById("playerRole").textContent = `あなたの役職: ${player.role}`;
+      document.getElementById("playerPhase").textContent = `現在のフェーズ: ${phase === "day" ? "昼" : phase === "night" ? "夜" : "ゲーム終了"}`;
+      
+      const actionTarget = document.getElementById("actionTarget");
+      const actionButton = document.getElementById("actionButton");
+      if (phase === "night" && player.alive && (player.role === "人狼" || player.role === "占い師")) {
+        actionTarget.classList.remove("hidden");
+        actionButton.classList.remove("hidden");
+        actionTarget.innerHTML = players.filter(p => p.alive && p.name !== currentPlayer).map(p => `<option value="${p.name}">${p.name}</option>`).join("");
+      } else {
+        actionTarget.classList.add("hidden");
+        actionButton.classList.add("hidden");
+      }
+    }
+
+    function addLog(message) {
+      const log = document.getElementById("log");
+      const li = document.createElement("li");
+      li.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      log.appendChild(li);
+    }
+
+    function formatTime(seconds) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      return `${minutes}:${secs < 10 ? "0" : ""}${secs}`;
+    }
+  
+
